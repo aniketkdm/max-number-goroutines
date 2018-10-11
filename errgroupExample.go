@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -12,13 +13,13 @@ import (
 
 var (
 	batchSize     = 100
-	maxGoroutines = 7
+	maxGoroutines = 1
 )
 
 func main() {
 	pCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	wg, _ := errgroup.WithContext(pCtx)
+	wg, ctx := errgroup.WithContext(pCtx)
 
 	file, err := os.Open("exampleFile.out")
 	if err != nil {
@@ -27,7 +28,7 @@ func main() {
 
 	scanner := bufio.NewScanner(file)
 
-	ch := readBatch(scanner, wg)
+	ch := readBatch(ctx, scanner, wg)
 
 	for i := 0; i < maxGoroutines; i++ {
 		wg.Go(func() error {
@@ -36,17 +37,26 @@ func main() {
 	}
 
 	if err := wg.Wait(); err != nil {
+		ctx.Done()
+		cancel()
 		logrus.Fatal(err)
 	}
 }
 
-func readBatch(scanner *bufio.Scanner, wg *errgroup.Group) <-chan []string {
+func readBatch(ctx context.Context, scanner *bufio.Scanner, wg *errgroup.Group) <-chan []string {
 	ch := make(chan []string, 5)
 	var line string
 	var batch []string
 
 	wg.Go(func() error {
 		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				close(ch)
+				return ctx.Err()
+			default:
+				break
+			}
 			line = scanner.Text()
 			batch = append(batch, line)
 			if len(batch) == 100 {
@@ -66,14 +76,17 @@ func readBatch(scanner *bufio.Scanner, wg *errgroup.Group) <-chan []string {
 }
 
 func writeBatch(ch <-chan []string) error {
+	count := 0
 	for batch := range ch {
+		count++
+		if count == 3 {
+			return errors.New("random error")
+		}
 		fmt.Println("received a batch")
 		for _, str := range batch {
 			fmt.Printf("processing: %v\n", str)
 		}
 	}
-	return nil
-
 	return nil
 }
 
