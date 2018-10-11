@@ -10,6 +10,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+var (
+	batchSize     = 100
+	maxGoroutines = 7
+)
+
 func main() {
 	pCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -23,19 +28,31 @@ func main() {
 	scanner := bufio.NewScanner(file)
 
 	ch := readBatch(scanner, wg)
-	writeBatch(ch, wg)
+
+	for i := 0; i < maxGoroutines; i++ {
+		wg.Go(func() error {
+			return writeBatch(ch)
+		})
+	}
 
 	if err := wg.Wait(); err != nil {
 		logrus.Fatal(err)
 	}
 }
 
-func readBatch(scanner *bufio.Scanner, wg *errgroup.Group) <-chan string {
-	ch := make(chan string, 100)
+func readBatch(scanner *bufio.Scanner, wg *errgroup.Group) <-chan []string {
+	ch := make(chan []string, 5)
+	var line string
+	var batch []string
 
 	wg.Go(func() error {
 		for scanner.Scan() {
-			ch <- scanner.Text()
+			line = scanner.Text()
+			batch = append(batch, line)
+			if len(batch) == 100 {
+				ch <- batch
+				batch = []string{}
+			}
 		}
 		if err := scanner.Err(); err != nil {
 			fmt.Fprintln(os.Stderr, "reading standard input:", err)
@@ -48,12 +65,18 @@ func readBatch(scanner *bufio.Scanner, wg *errgroup.Group) <-chan string {
 	return ch
 }
 
-func writeBatch(ch <-chan string, wg *errgroup.Group) error {
-	wg.Go(func() error {
-		for str := range ch {
+func writeBatch(ch <-chan []string) error {
+	for batch := range ch {
+		fmt.Println("received a batch")
+		for _, str := range batch {
 			fmt.Printf("processing: %v\n", str)
 		}
-		return nil
-	})
+	}
+	return nil
+
 	return nil
 }
+
+// with just batching: go run errgroupExample.go  0.25s user 0.29s system 52% cpu 1.043 total
+// parallel of 3: go run errgroupExample.go  0.28s user 0.32s system 43% cpu 1.369 total
+// parallel of 3: go run errgroupExample.go  0.30s user 0.35s system 50% cpu 1.284 total
